@@ -8,9 +8,8 @@ import json
 import base64
 from multiprocessing.pool import ThreadPool
 from functools import partial
+from communication_helper import *
 
-SERVER_HOST = "localhost"
-SERVER_PORT = 1234
 THREADS_DIMENSION = 3
 
 # Initialize logging
@@ -142,9 +141,44 @@ def send_json(client_socket: socket.socket, images):
     client_socket.sendall(response_data)
 
 
+def receive_raw_bytes(client_socket: socket.socket):
+    selected_option = client_socket.recv(1024).decode()
+    log("Selected option received")
+    images_no = int.from_bytes(client_socket.recv(8), byteorder="big")
+    log("Number of images received")
+
+    decoded_images = []
+    for _ in range(images_no):
+        rows = int.from_bytes(client_socket.recv(8), byteorder="big")
+        cols = int.from_bytes(client_socket.recv(8), byteorder="big")
+        bytes_no = rows * cols * 3
+
+        raw_image = recvall(client_socket, bytes_no)
+        log(f"Image received")
+
+        decoded_image = (
+            np.frombuffer(raw_image, dtype=np.ubyte)
+            .reshape(rows, cols, 3)
+            .astype(np.uint8)
+        )
+        decoded_images.append(decoded_image)
+        log(f"Image decoded. Dimensions: {decoded_image.shape}")
+
+    log(f"All images received and formatted")
+    return (selected_option, decoded_images)
+
+
+def send_raw_bytes(client_socket: socket.socket, images):
+    for img in images:
+        client_socket.sendall(img.astype(np.ubyte).tobytes())
+
+
 def handle_client(client_socket):
     try:
-        selected_option, images = receive_json(client_socket)
+        if PROTOCOL == Protocol.JSON:
+            selected_option, images = receive_json(client_socket)
+        if PROTOCOL == Protocol.BYTES:
+            selected_option, images = receive_raw_bytes(client_socket)
 
         processed_images = []
         for img_index, img in enumerate(images):
@@ -162,7 +196,10 @@ def handle_client(client_socket):
             log(f"Image completely processed in {processing_time:.4f}s")
             processed_images.append(processed_img)
 
-        send_json(client_socket, processed_images)
+        if PROTOCOL == Protocol.JSON:
+            send_json(client_socket, processed_images)
+        if PROTOCOL == Protocol.BYTES:
+            send_raw_bytes(client_socket, processed_images)
         log("Processed images sent back to client")
 
     except Exception as e:

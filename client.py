@@ -7,9 +7,7 @@ import cv2
 import numpy as np
 import json
 import base64
-
-SERVER_HOST = "localhost"
-SERVER_PORT = 1234
+from communication_helper import *
 
 client_socket = None
 processed_images = []
@@ -26,31 +24,30 @@ def connect_to_server():
         showinfo("Error", "Failed to connect to the server.")
 
 
-def send_data(client_socket: socket.socket, images, selected_option):
+def send_json(client_socket: socket.socket, images, selected_option):
     encoded_images = []
     for img in images:
-        # Encode images to base64
+       
         _, img_encoded = cv2.imencode(".jpg", img)
         img_base64 = base64.b64encode(img_encoded).decode("utf-8")
         encoded_images.append(img_base64)
 
-    # Create JSON payload
     payload = {
         "selected_option": selected_option,
         "num_images": len(images),
         "images": encoded_images,
     }
 
-    # Send JSON-encoded data to the server.
+
     json_data = json.dumps(payload).encode("utf-8")
     client_socket.sendall(len(json_data).to_bytes(8, byteorder="big"))
     client_socket.sendall(json_data)
 
 
-def receive_data(client_socket: socket.socket):
-    # Receive JSON-encoded data from the server.
+def receive_json(client_socket: socket.socket):
+    
     data_size = int.from_bytes(client_socket.recv(8), byteorder="big")
-    raw_data = client_socket.recv(data_size).decode("utf-8")
+    raw_data = recvall(client_socket, data_size).decode("utf-8")
     json_data = json.loads(raw_data)
 
     images = []
@@ -62,21 +59,54 @@ def receive_data(client_socket: socket.socket):
     return images
 
 
+def send_raw_bytes(client_socket: socket.socket, images, selected_option):
+    client_socket.sendall(selected_option.encode())
+
+   
+    client_socket.sendall(len(images).to_bytes(8, byteorder="big"))
+    for img in images:
+       
+        client_socket.sendall(img.shape[0].to_bytes(8, byteorder="big"))
+    
+        client_socket.sendall(img.shape[1].to_bytes(8, byteorder="big"))
+
+        client_socket.sendall(img.astype(np.ubyte).tobytes())
+
+
+def receive_raw_bytes(client_socket: socket.socket, image_sizes):
+    images = []  
+    for image_size in image_sizes:
+        rows, cols = image_size
+        bytes_no = rows * cols * 3
+        raw_image = recvall(client_socket, bytes_no)
+        images.append(
+            np.frombuffer(raw_image, dtype=np.ubyte)
+            .reshape(rows, cols, 3)
+            .astype(np.uint8)
+        )
+    return images
+
+
 def upload_file(file_paths, selected_option):
     file_paths = file_paths.split("\n")
 
     if file_paths and any(file_paths):
         try:
-            # Prepare images and metadata
+            
             images = [cv2.imread(p) for p in file_paths]
 
-            # Send images to the server
-            send_data(client_socket, images, selected_option)
+            if PROTOCOL == Protocol.JSON:
+                send_json(client_socket, images, selected_option)
+            if PROTOCOL == Protocol.BYTES:
+                send_raw_bytes(client_socket, images, selected_option)
             print("Sent all images to the server.")
 
-            # Receive processed images from the server
             global processed_images
-            processed_images = receive_data(client_socket)
+            if PROTOCOL == Protocol.JSON:
+                processed_images = receive_json(client_socket)
+            if PROTOCOL == Protocol.BYTES:
+                image_sizes = [img.shape[0:2] for img in images]
+                processed_images = receive_raw_bytes(client_socket, image_sizes)
             print("Received processed images from server.")
 
         except FileNotFoundError as e:
